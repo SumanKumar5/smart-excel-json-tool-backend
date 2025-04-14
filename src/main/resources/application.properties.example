@@ -1,0 +1,16 @@
+# Application Info
+spring.application.name=smart-excel-json-tool
+
+# Logging
+logging.level.org.springframework.cache=DEBUG
+
+# Async request timeout
+spring.mvc.async.request-timeout=120s
+
+# Gemini API Config (replace locally)
+gemini.apikey=YOUR_GEMINI_API_KEY
+gemini.model=gemini-2.0-flash
+
+# File Upload Limits
+spring.servlet.multipart.max-file-size=10MB
+spring.servlet.multipart.max-request-size=11MB
