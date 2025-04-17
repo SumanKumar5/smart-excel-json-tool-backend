@@ -105,3 +105,24 @@ Or run `SmartExcelJsonToolApplication` via IntelliJ IDEA.
 ## 📘 License
 
 MIT — [Suman Kumar](https://github.com/SumanKumar5)
+
+## 🐳 Docker Support (Optional)
+
+You can run the backend in a container using Docker:
+
+### 1. Build the project JAR:
+```bash
+mvn clean package
+```
+
+### 2. Build the Docker image:
+```bash
+docker build -t smart-excel-json-tool-backend .
+```
+
+### 3. Run the container:
+```bash
+docker run -p 8080:8080 smart-excel-json-tool-backend
+```
+
+The backend will be live at: `http://localhost:8080`
