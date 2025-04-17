@@ -102,10 +102,6 @@ Or run `SmartExcelJsonToolApplication` via IntelliJ IDEA.
 
 ---
 
-## 📘 License
-
-MIT — [Suman Kumar](https://github.com/SumanKumar5)
-
 ## 🐳 Docker Support (Optional)
 
 You can run the backend in a container using Docker:
@@ -126,3 +122,12 @@ docker run -p 8080:8080 smart-excel-json-tool-backend
 ```
 
 The backend will be live at: `http://localhost:8080`
+
+
+
+---
+
+
+## 📘 License
+
+MIT — [Suman Kumar](https://github.com/SumanKumar5)
