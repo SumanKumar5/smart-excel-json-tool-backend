@@ -1,6 +1,14 @@
 # Smart Excel-JSON Tool (Backend)
 
-A powerful Java + Spring Boot backend that allows users to seamlessly convert Excel files to JSON, JSON to Excel, and auto-generate JSON Schemas from Excel — enhanced with Gemini AI for smart data cleanup, error correction, and schema inference.
+[![Java](https://img.shields.io/badge/Java-21-blue?logo=java)](https://www.oracle.com/java/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.2.4-brightgreen?logo=spring-boot)](https://spring.io/projects/spring-boot)
+[![Live](https://img.shields.io/badge/Live-smartexceljson.me-success?logo=vercel)](https://smartexceljson.me)
+[![Dockerized](https://img.shields.io/badge/Docker-Supported-blue?logo=docker)](https://www.docker.com/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status](https://img.shields.io/website?url=https%3A%2F%2Fsmartexceljson.me)](https://smartexceljson.me)
+
+> A powerful Java + Spring Boot backend that allows users to seamlessly convert Excel ↔ JSON, and generate JSON Schemas — enhanced with Gemini AI.
+
 
 > 🧠 AI-powered | ⚡ Async & Reactive | 💾 Caching | 🔐 Rate-limited
 
