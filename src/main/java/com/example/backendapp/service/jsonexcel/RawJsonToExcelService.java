@@ -1,6 +1,5 @@
 package com.example.backendapp.service.jsonexcel;
 
-import com.example.backendapp.exception.ConversionException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.poi.ss.usermodel.*;
@@ -14,17 +13,16 @@ import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
-import java.util.Comparator;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 @Service
@@ -58,14 +56,9 @@ public class RawJsonToExcelService {
         }
         return Mono.fromCallable(() -> {
                     log.info("Parsing JSON file: {}", file.getOriginalFilename());
-                    try {
-                        return objectMapper.readValue(
-                                file.getInputStream(),
-                                new TypeReference<Map<String, List<Map<String, Object>>>>() {});
-                    } catch (Exception e) {
-                        log.error("Failed to parse JSON file: {}", file.getOriginalFilename(), e);
-                        throw new ConversionException("Failed to parse JSON file: " + e.getMessage(), e);
-                    }
+                    return objectMapper.readValue(
+                            file.getInputStream(),
+                            new TypeReference<Map<String, List<Map<String, Object>>>>() {});
                 })
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -77,7 +70,6 @@ public class RawJsonToExcelService {
         }
 
         return Mono.fromCallable(() -> {
-                    log.info("Creating workbook and style cache...");
                     SXSSFWorkbook workbook = new SXSSFWorkbook(100);
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
                     Map<String, CellStyle> styleCache = createStyleCache(workbook);
@@ -109,64 +101,46 @@ public class RawJsonToExcelService {
                         Map<String, Object> firstRowData = rowsData.getFirst();
                         List<String> headers = new ArrayList<>(new LinkedHashSet<>(firstRowData.keySet()));
                         writeHeaderRow(sheet, headers, styleCache.get(STYLE_HEADER));
+                        AtomicInteger rowNum = new AtomicInteger(1);
 
                         Mono<Void> sheetMono = Flux.fromIterable(rowsData)
-                                .index()
-                                .parallel()
-                                .runOn(Schedulers.parallel())
-                                .map(indexedRow -> Tuples.of(
-                                        indexedRow.getT1(),
-                                        prepareRowData(indexedRow.getT2(), headers)
-                                ))
-                                .sequential()
-                                .sort(Comparator.comparing(Tuple2::getT1))
-                                .map(Tuple2::getT2)
-                                .collectList()
-                                .publishOn(Schedulers.boundedElastic())
-                                .doOnNext(preparedRows -> {
-                                    int writtenRowCount = 0;
-                                    for (int i = 0; i < preparedRows.size(); i++) {
-                                        List<PreparedCellData> rowCells = preparedRows.get(i);
-                                        Row row = sheet.createRow(i + 1);
+                                .flatMapSequential(rowData -> Mono.fromRunnable(() -> {
+                                    List<PreparedCellData> rowCells = prepareRowData(rowData, headers);
+                                    Row row = sheet.createRow(rowNum.getAndIncrement());
 
-                                        for (int col = 0; col < rowCells.size(); col++) {
-                                            Cell cell = row.createCell(col);
-                                            PreparedCellData data = rowCells.get(col);
-                                            try {
-                                                applyPreparedCellValue(cell, data, styleCache);
-                                            } catch (Exception e) {
-                                                log.warn("Cell write error. Sheet: {}, Row: {}, Col: {}, Value: '{}'. Err: {}",
-                                                        safeSheetName, i + 1, col, data.value(), e.getMessage());
-                                                cell.setCellValue("WRITE_ERROR");
-                                                CellStyle errStyle = styleCache.get(STYLE_ERROR);
-                                                if (errStyle != null) cell.setCellStyle(errStyle);
-                                            }
-                                        }
-                                        writtenRowCount++;
-
-                                        if (writtenRowCount % ROW_WRITE_BATCH_SIZE == 0) {
-                                            try {
-                                                sheet.flushRows(ROW_WRITE_BATCH_SIZE);
-                                            } catch (IOException e) {
-                                                log.error("Flushing rows failed for {}", safeSheetName, e);
-                                            }
-                                        }
-                                    }
-
-                                    if (writtenRowCount % ROW_WRITE_BATCH_SIZE != 0) {
+                                    for (int col = 0; col < rowCells.size(); col++) {
+                                        Cell cell = row.createCell(col);
+                                        PreparedCellData data = rowCells.get(col);
                                         try {
-                                            sheet.flushRows(0);
-                                        } catch (IOException e) {
-                                            log.error("Final flush failed for {}", safeSheetName, e);
+                                            applyPreparedCellValue(cell, data, styleCache);
+                                        } catch (Exception e) {
+                                            log.warn("Cell write error. Sheet: {}, Row: {}, Col: {}, Value: '{}'. Err: {}",
+                                                    safeSheetName, row.getRowNum(), col, data.value(), e.getMessage());
+                                            cell.setCellValue("WRITE_ERROR");
+                                            CellStyle errStyle = styleCache.get(STYLE_ERROR);
+                                            if (errStyle != null) cell.setCellStyle(errStyle);
                                         }
                                     }
 
-                                    sheet.createFreezePane(0, 1);
-                                    for (int col = 0; col < headers.size(); col++) {
-                                        sheet.autoSizeColumn(col);
+                                    if (row.getRowNum() % ROW_WRITE_BATCH_SIZE == 0) {
+                                        try {
+                                            sheet.flushRows(ROW_WRITE_BATCH_SIZE);
+                                        } catch (IOException e) {
+                                            log.error("Flushing rows failed for {}", safeSheetName, e);
+                                        }
                                     }
-
-                                    log.debug("Finished writing sheet: {}", safeSheetName);
+                                }), 1)
+                                .doOnComplete(() -> {
+                                    try {
+                                        sheet.flushRows(0);
+                                        sheet.createFreezePane(0, 1);
+                                        for (int col = 0; col < headers.size(); col++) {
+                                            sheet.autoSizeColumn(col);
+                                        }
+                                        log.debug("Finished writing sheet: {}", safeSheetName);
+                                    } catch (IOException e) {
+                                        log.error("Final flush failed for {}", safeSheetName, e);
+                                    }
                                 })
                                 .then();
 
@@ -175,13 +149,10 @@ public class RawJsonToExcelService {
 
                     return Flux.concat(sheetMonos)
                             .then(Mono.fromCallable(() -> {
-                                log.info("Writing final workbook to output stream...");
                                 workbook.write(out);
                                 workbook.close();
-                                log.info("Workbook writing complete.");
                                 return out.toByteArray();
-                            }))
-                            .subscribeOn(Schedulers.boundedElastic());
+                            }).subscribeOn(Schedulers.boundedElastic()));
                 });
     }
 
@@ -238,56 +209,49 @@ public class RawJsonToExcelService {
     }
 
     private PreparedCellData prepareSingleCellValue(Object value, String header) {
-        switch (value) {
-            case null -> {
-                return new PreparedCellData(null, null);
-            }
-            case String strVal -> {
-                String trimmedVal = strVal.trim();
-                if (PATTERN_DATE.matcher(trimmedVal).matches()) {
-                    try {
+        if (value == null) return new PreparedCellData(null, null);
+
+        try {
+            switch (value) {
+                case String strVal -> {
+                    String trimmedVal = strVal.trim();
+                    if (PATTERN_DATE.matcher(trimmedVal).matches()) {
                         LocalDate date = LocalDate.parse(trimmedVal);
                         return new PreparedCellData(Date.from(date.atStartOfDay(ZoneId.systemDefault()).toInstant()), STYLE_DATE);
-                    } catch (DateTimeParseException ignored) {}
-                }
-                if (PATTERN_DATETIME.matcher(trimmedVal).matches()) {
-                    try {
+                    }
+                    if (PATTERN_DATETIME.matcher(trimmedVal).matches()) {
                         LocalDateTime dateTime = LocalDateTime.parse(trimmedVal);
                         return new PreparedCellData(Date.from(dateTime.atZone(ZoneId.systemDefault()).toInstant()), STYLE_DATETIME);
-                    } catch (DateTimeParseException ignored) {}
-                }
-                if (trimmedVal.endsWith("%")) {
-                    try {
-                        String numericPart = trimmedVal.substring(0, trimmedVal.length() - 1);
-                        double numericValue = Double.parseDouble(numericPart);
+                    }
+                    if (trimmedVal.endsWith("%")) {
+                        double numericValue = Double.parseDouble(trimmedVal.replace("%", ""));
                         return new PreparedCellData(numericValue / 100.0, STYLE_PERCENT);
-                    } catch (NumberFormatException ignored) {}
+                    }
+                    return new PreparedCellData(trimmedVal, null);
                 }
-                return new PreparedCellData(trimmedVal, null);
-            }
-            case Number num -> {
-                double numericValue = num.doubleValue();
-                String lowerHeader = header.toLowerCase();
-                if (KEYWORDS_PERCENT.stream().anyMatch(lowerHeader::contains)) {
-                    return new PreparedCellData(numericValue / 100.0, STYLE_PERCENT);
-                } else {
+                case Number num -> {
+                    double numericValue = num.doubleValue();
+                    String lowerHeader = header.toLowerCase();
+                    if (KEYWORDS_PERCENT.stream().anyMatch(lowerHeader::contains)) {
+                        return new PreparedCellData(numericValue / 100.0, STYLE_PERCENT);
+                    }
                     return new PreparedCellData(numericValue, null);
                 }
-            }
-            case Boolean bool -> {
-                return new PreparedCellData(bool, null);
-            }
-            case Date date -> {
-                return new PreparedCellData(date, STYLE_DATE);
-            }
-            default -> {
-                try {
-                    return new PreparedCellData(value.toString(), null);
-                } catch (Exception e) {
-                    log.warn("Could not convert value of type {} to string during preparation: {}", value.getClass().getName(), e.getMessage());
-                    return new PreparedCellData("PREP_ERROR", STYLE_ERROR);
+                case Boolean bool -> {
+                    return new PreparedCellData(bool, null);
+                }
+                case Date date -> {
+                    return new PreparedCellData(date, STYLE_DATE);
+                }
+                default -> {
                 }
             }
+
+            return new PreparedCellData(value.toString(), null);
+
+        } catch (Exception e) {
+            log.warn("Could not convert value of type {} to string during preparation: {}", value.getClass().getName(), e.getMessage());
+            return new PreparedCellData("PREP_ERROR", STYLE_ERROR);
         }
     }
 
@@ -296,12 +260,11 @@ public class RawJsonToExcelService {
         String styleHint = preparedData.styleHint();
         CellStyle style = (styleHint != null) ? styleCache.get(styleHint) : null;
 
-        if (value == null) {
-            cell.setBlank();
-            return;
-        }
-
         switch (value) {
+            case null -> {
+                cell.setBlank();
+                return;
+            }
             case String s -> cell.setCellValue(s);
             case Number n -> cell.setCellValue(n.doubleValue());
             case Boolean b -> cell.setCellValue(b);
@@ -309,8 +272,6 @@ public class RawJsonToExcelService {
             default -> cell.setCellValue(value.toString());
         }
 
-        if (style != null) {
-            cell.setCellStyle(style);
-        }
+        if (style != null) cell.setCellStyle(style);
     }
 }

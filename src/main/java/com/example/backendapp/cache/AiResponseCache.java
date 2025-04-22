@@ -1,7 +1,6 @@
 package com.example.backendapp.cache;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.*;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
@@ -13,8 +12,11 @@ public class AiResponseCache {
 
     public AiResponseCache() {
         this.cache = Caffeine.newBuilder()
-                .expireAfterWrite(10, TimeUnit.MINUTES)
-                .maximumSize(1000)
+                .expireAfterAccess(5, TimeUnit.MINUTES)
+                .maximumWeight(50 * 1024 * 1024)
+                .weigher((String key, String value) -> value.getBytes().length)
+                .removalListener((String key, String value, RemovalCause cause) ->
+                        System.out.println("🗑️ Removed from AiResponseCache: " + key + " due to " + cause))
                 .build();
     }
 

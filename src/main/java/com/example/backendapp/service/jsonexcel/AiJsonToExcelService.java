@@ -9,13 +9,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.ss.util.WorkbookUtil;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xssf.streaming.SXSSFSheet;
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
 
@@ -41,9 +43,7 @@ public class AiJsonToExcelService {
         this.geminiConfig = geminiConfig;
     }
 
-    public Mono<byte[]> enhance(Map<String, List<Map<String, Object>>> originalJsonUnordered) {
-        Map<String, List<Map<String, Object>>> originalJson = new LinkedHashMap<>(originalJsonUnordered);
-
+    public Mono<byte[]> enhance(Map<String, List<Map<String, Object>>> originalJson) {
         int totalSheets = originalJson.size();
         int dynamicConcurrency = Math.min(5, Math.max(1, totalSheets / 2));
 
@@ -63,13 +63,11 @@ public class AiJsonToExcelService {
         return Flux.fromIterable(chunks)
                 .flatMap(chunk -> enhanceChunk(sheetName, chunk), 3)
                 .collectList()
-                .map(chunksList -> {
+                .flatMap(chunksList -> Mono.fromCallable(() -> {
                     List<Map<String, Object>> merged = new ArrayList<>();
-                    for (List<Map<String, Object>> chunk : chunksList) {
-                        merged.addAll(chunk);
-                    }
+                    for (List<Map<String, Object>> chunk : chunksList) merged.addAll(chunk);
                     return Tuples.of(sheetName, merged);
-                });
+                }).subscribeOn(Schedulers.boundedElastic()));
     }
 
     private Mono<List<Map<String, Object>>> enhanceChunk(String sheetName, List<Map<String, Object>> chunk) {
@@ -78,7 +76,9 @@ public class AiJsonToExcelService {
             String sheetCacheKey = generateHash(sheetName + chunkJson);
             String cached = aiResponseCache.getCachedResponse(sheetCacheKey);
             if (cached != null) {
-                return Mono.fromCallable(() -> objectMapper.readValue(cached, new TypeReference<>() {}));
+                return Mono.fromCallable(() -> objectMapper.readValue(
+                        cached, new TypeReference<List<Map<String, Object>>>() {})
+                ).subscribeOn(Schedulers.boundedElastic());
             }
 
             Map<String, Object> requestBody = buildGeminiRequestBody(sheetName, chunk);
@@ -94,24 +94,20 @@ public class AiJsonToExcelService {
                     .bodyToMono(String.class)
                     .timeout(Duration.ofSeconds(90))
                     .map(GeminiResponseUtil::extractTextFromGeminiResponse)
-                    .flatMap(response -> {
+                    .flatMap(response -> Mono.fromCallable(() -> {
                         try {
                             Map<String, List<Map<String, Object>>> parsed =
                                     objectMapper.readValue(response, new TypeReference<>() {});
                             List<Map<String, Object>> result = parsed.getOrDefault(sheetName, Collections.emptyList());
                             aiResponseCache.cacheResponse(sheetCacheKey, objectMapper.writeValueAsString(result));
-                            return Mono.just(result);
-                        } catch (Exception ex) {
-                            try {
-                                List<Map<String, Object>> parsedArray =
-                                        objectMapper.readValue(response, new TypeReference<>() {});
-                                aiResponseCache.cacheResponse(sheetCacheKey, objectMapper.writeValueAsString(parsedArray));
-                                return Mono.just(parsedArray);
-                            } catch (Exception innerEx) {
-                                return Mono.error(new AIProcessingException("Failed to parse enhanced sheet chunk: " + innerEx.getMessage()));
-                            }
+                            return result;
+                        } catch (Exception ex1) {
+                            List<Map<String, Object>> parsedArray =
+                                    objectMapper.readValue(response, new TypeReference<>() {});
+                            aiResponseCache.cacheResponse(sheetCacheKey, objectMapper.writeValueAsString(parsedArray));
+                            return parsedArray;
                         }
-                    });
+                    }).subscribeOn(Schedulers.boundedElastic()));
 
         } catch (Exception e) {
             return Mono.error(new AIProcessingException("Failed to enhance sheet chunk: " + e.getMessage()));
@@ -138,12 +134,13 @@ public class AiJsonToExcelService {
     private Mono<byte[]> generateExcelAsync(Map<String, List<Map<String, Object>>> original,
                                             Map<String, List<Map<String, Object>>> enhanced) {
         return Mono.fromCallable(() -> generateHighlightedExcel(original, enhanced))
-                .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     private byte[] generateHighlightedExcel(Map<String, List<Map<String, Object>>> original,
                                             Map<String, List<Map<String, Object>>> enhanced) throws Exception {
-        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+        try (SXSSFWorkbook workbook = new SXSSFWorkbook(100); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            workbook.setCompressTempFiles(true);
             CreationHelper factory = workbook.getCreationHelper();
             CellStyle headerStyle = createBoldStyle(workbook);
             CellStyle highlightStyle = createHighlightStyle(workbook);
@@ -152,7 +149,8 @@ public class AiJsonToExcelService {
             for (Map.Entry<String, List<Map<String, Object>>> entry : enhanced.entrySet()) {
                 String originalSheetName = entry.getKey();
                 String sheetName = WorkbookUtil.createSafeSheetName(originalSheetName);
-                Sheet sheet = workbook.createSheet(sheetName);
+                SXSSFSheet sheet = workbook.createSheet(sheetName);
+                sheet.trackAllColumnsForAutoSizing();
 
                 List<Map<String, Object>> enhancedRows = entry.getValue();
                 List<Map<String, Object>> originalRows = original.getOrDefault(originalSheetName, List.of());
@@ -193,13 +191,16 @@ public class AiJsonToExcelService {
                             addComment(factory, drawing, cell, oldValue);
                         }
                     }
-                }
 
-                for (int col = 0; col < headers.size(); col++) {
-                    sheet.autoSizeColumn(col);
+                    if ((rowIdx + 1) % 1000 == 0) {
+                        sheet.flushRows(1000);
+                    }
                 }
 
                 sheet.createFreezePane(0, 1);
+                for (int col = 0; col < headers.size(); col++) {
+                    sheet.autoSizeColumn(col);
+                }
 
                 if (hasChanges) {
                     int legendRowNum = sheet.getLastRowNum() + 2;
@@ -207,7 +208,6 @@ public class AiJsonToExcelService {
                     Cell legendCell = legendRow.createCell(0);
                     legendCell.setCellValue("AI Modified: Hover over cell for original value");
                     legendCell.setCellStyle(legendStyle);
-
                     legendRow.setHeightInPoints(sheet.getDefaultRowHeightInPoints() * 3f);
 
                     if (headers.size() > 1) {
@@ -235,7 +235,7 @@ public class AiJsonToExcelService {
     private void applyCellValue(Cell cell, Object value) {
         switch (value) {
             case null -> cell.setBlank();
-            case Number number -> cell.setCellValue(number.doubleValue());
+            case Number n -> cell.setCellValue(n.doubleValue());
             case Boolean b -> cell.setCellValue(b);
             default -> cell.setCellValue(value.toString());
         }
@@ -244,8 +244,8 @@ public class AiJsonToExcelService {
     private void addComment(CreationHelper factory, Drawing<?> drawing, Cell cell, Object originalValue) {
         try {
             ClientAnchor anchor = factory.createClientAnchor();
-            anchor.setCol1(cell.getColumnIndex() + 1);
-            anchor.setCol2(cell.getColumnIndex() + 3);
+            anchor.setCol1(cell.getColumnIndex());
+            anchor.setCol2(cell.getColumnIndex() + 2);
             anchor.setRow1(cell.getRowIndex());
             anchor.setRow2(cell.getRowIndex() + 3);
 

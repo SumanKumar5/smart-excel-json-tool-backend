@@ -1,5 +1,6 @@
-target/
+# Ignore everything except our app jar
 *.jar
+!backendapp-0.0.1-SNAPSHOT.jar
 *.class
 *.log
 *.tar

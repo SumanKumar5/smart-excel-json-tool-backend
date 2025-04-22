@@ -14,8 +14,9 @@ public class JsonToExcelCache {
     @PostConstruct
     public void init() {
         this.cache = Caffeine.newBuilder()
-                .maximumSize(100)
-                .expireAfterAccess(30, TimeUnit.MINUTES)
+                .expireAfterAccess(5, TimeUnit.MINUTES)
+                .maximumWeight(50 * 1024 * 1024)
+                .weigher((String key, byte[] value) -> value.length)
                 .removalListener((String key, byte[] value, RemovalCause cause) ->
                         System.out.println("🗑️ Removed from JsonToExcelCache: " + key + " due to " + cause))
                 .build();

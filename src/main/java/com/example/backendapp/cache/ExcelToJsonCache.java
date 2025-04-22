@@ -1,7 +1,6 @@
 package com.example.backendapp.cache;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.*;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
@@ -13,8 +12,11 @@ public class ExcelToJsonCache {
 
     public ExcelToJsonCache() {
         this.cache = Caffeine.newBuilder()
-                .expireAfterWrite(15, TimeUnit.MINUTES)
-                .maximumSize(500)
+                .expireAfterAccess(5, TimeUnit.MINUTES)
+                .maximumWeight(50 * 1024 * 1024)
+                .weigher((String key, String value) -> value.getBytes().length)
+                .removalListener((String key, String value, RemovalCause cause) ->
+                        System.out.println("🗑️ Removed from ExcelToJsonCache: " + key + " due to " + cause))
                 .build();
     }
 

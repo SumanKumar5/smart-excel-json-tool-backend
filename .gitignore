@@ -1,10 +1,22 @@
-HELP.md
+# Maven target directories
 target/
-!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
 
-### STS ###
+# Maven Wrapper JAR
+!.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*.log
+
+# Local environment config
+.env
+*.env
+
+# Application secrets (if you ever use these)
+src/main/resources/application.properties
+
+# STS (Spring Tool Suite)
 .apt_generated
 .classpath
 .factorypath
@@ -13,13 +25,13 @@ target/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea
+# IntelliJ
+.idea/
 *.iws
 *.iml
 *.ipr
 
-### NetBeans ###
+# NetBeans
 /nbproject/private/
 /nbbuild/
 /dist/
@@ -29,7 +41,10 @@ build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 
-### VS Code ###
+# VS Code
 .vscode/
 
-src/main/resources/application.properties
+# Misc
+HELP.md
+.DS_Store
+Thumbs.db

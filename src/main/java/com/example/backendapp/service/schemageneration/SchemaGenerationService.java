@@ -30,6 +30,8 @@ public class SchemaGenerationService {
     private final AiResponseCache aiResponseCache;
     private final ObjectMapper objectMapper;
 
+    private record SchemaRequest(String previewJson, String fileKey, String semanticKey) {}
+
     @Autowired
     public SchemaGenerationService(WebClient.Builder webClientBuilder,
                                    GeminiConfig geminiConfig,
@@ -51,10 +53,9 @@ public class SchemaGenerationService {
                     String cachedFromFileKey = aiResponseCache.getCachedResponse(fileKey);
                     if (cachedFromFileKey != null) {
                         logger.info("File-based cache HIT for key: {}", fileKey);
-                        Object schema = objectMapper.readValue(cachedFromFileKey, Object.class);
-                        return Map.of("cachedSchema", schema);
-                    } else {
-                        logger.info("File-based cache MISS for key: {}", fileKey);
+                        return Mono.fromCallable(() ->
+                                objectMapper.readValue(cachedFromFileKey, Object.class)
+                        );
                     }
 
                     Map<String, List<Map<String, Object>>> previewData = ExcelPreviewUtil.extractPreview(file);
@@ -63,68 +64,46 @@ public class SchemaGenerationService {
 
                     if (cachedFromPreview != null) {
                         logger.info("Semantic preview-based cache HIT for key: {}", semanticKey);
-                        Object schema = objectMapper.readValue(cachedFromPreview, Object.class);
-                        return Map.of("cachedSchema", schema);
-                    } else {
-                        logger.info("Semantic preview-based cache MISS for key: {}", semanticKey);
+                        return Mono.fromCallable(() ->
+                                objectMapper.readValue(cachedFromPreview, Object.class)
+                        );
                     }
 
+                    logger.info("Cache MISS. Calling Gemini API for schema generation...");
                     String previewJson = objectMapper.writeValueAsString(previewData);
-                    return Map.of("previewJson", previewJson, "fileKey", fileKey, "semanticKey", semanticKey);
+                    return generateSchemaFromGemini(new SchemaRequest(previewJson, fileKey, semanticKey));
                 })
+                .flatMap(mono -> mono)
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(result -> {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> dataMap = (Map<String, Object>) result;
-
-                    if (dataMap.containsKey("cachedSchema")) {
-                        return Mono.just(dataMap.get("cachedSchema"));
-                    }
-
-                    String previewJson = (String) dataMap.get("previewJson");
-                    String fileKey = (String) dataMap.get("fileKey");
-                    String semanticKey = (String) dataMap.get("semanticKey");
-
-                    Map<String, Object> requestBody = buildRequestBody(previewJson);
-
-                    logger.info("Calling Gemini API to generate schema...");
-
-                    return webClient.post()
-                            .uri(uriBuilder -> uriBuilder
-                                    .path(geminiConfig.buildModelPath())
-                                    .queryParam("key", geminiConfig.getApiKey())
-                                    .build())
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .bodyValue(requestBody)
-                            .retrieve()
-                            .bodyToMono(String.class)
-                            .map(GeminiResponseUtil::extractTextFromGeminiResponse)
-                            .doOnNext(response -> {
-                                logger.info("Caching Gemini response under both keys");
-                                aiResponseCache.cacheResponse(fileKey, response);
-                                aiResponseCache.cacheResponse(semanticKey, response);
-                            })
-                            .flatMap(response -> {
-                                try {
-                                    return Mono.just(objectMapper.readValue(response, Object.class));
-                                } catch (Exception e) {
-                                    return Mono.error(new AIProcessingException("Failed to parse AI schema response: " + e.getMessage()));
-                                }
-                            });
-                })
                 .onErrorMap(e -> new AIProcessingException(
                         "Schema generation failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()), e));
     }
 
+    private Mono<Object> generateSchemaFromGemini(SchemaRequest request) {
+        Map<String, Object> requestBody = buildRequestBody(request.previewJson());
+
+        return webClient.post()
+                .uri(uriBuilder -> uriBuilder
+                        .path(geminiConfig.buildModelPath())
+                        .queryParam("key", geminiConfig.getApiKey())
+                        .build())
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(requestBody)
+                .retrieve()
+                .bodyToMono(String.class)
+                .map(GeminiResponseUtil::extractTextFromGeminiResponse)
+                .doOnNext(response -> {
+                    logger.info("Caching Gemini response under both keys.");
+                    aiResponseCache.cacheResponse(request.fileKey(), response);
+                    aiResponseCache.cacheResponse(request.semanticKey(), response);
+                })
+                .flatMap(response -> Mono.fromCallable(() -> objectMapper.readValue(response, Object.class)))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     private Map<String, Object> buildRequestBody(String previewJson) {
         String prompt = """
-                You are a JSON Schema generator.
-                The following is a sample of Excel data (converted to JSON).
-                Please infer and generate a JSON Schema based on this structure.
-
-                Output only the JSON Schema (no explanation).
-
-                Input:
+                Infer JSON Schema from this Excel data (in JSON). Output only the schema:
                 """ + previewJson;
 
         return Map.of(
