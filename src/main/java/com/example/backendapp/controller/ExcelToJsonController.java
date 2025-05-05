@@ -1,7 +1,6 @@
 package com.example.backendapp.controller;
 
 import com.example.backendapp.exception.InvalidInputException;
-import com.example.backendapp.model.ResponseModel;
 import com.example.backendapp.service.exceljson.ExcelToJsonService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -23,7 +22,7 @@ public class ExcelToJsonController {
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseModel<?>> convertExcelToJson(@RequestParam("file") MultipartFile file,
+    public Mono<Object> convertExcelToJson(@RequestParam("file") MultipartFile file,
                                                      @RequestParam(name = "useAI", defaultValue = "false") boolean useAI) {
 
         if (file == null || file.isEmpty()) {
@@ -41,8 +40,7 @@ public class ExcelToJsonController {
             return Mono.error(new InvalidInputException("Only .xlsx, .xls, and .xlsm Excel files are supported."));
         }
 
-        return excelToJsonService.convert(file, useAI)
-                .map(ResponseModel::new);
+        return excelToJsonService.convert(file, useAI);
     }
 
     private static String sanitizeFilename(String filename) {
