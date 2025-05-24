@@ -74,7 +74,7 @@ public class JsonToExcelController {
                 throw new InvalidInputException("Empty JSON object is not valid.");
             }
 
-            // Case 2: Flat object → wrap into array under Sheet1
+            // Case 2: Flat object → wrap into an array under Sheet1
             else if (jsonNode.isObject() && jsonNode.elements().hasNext() && !jsonNode.elements().next().isContainerNode()) {
                 Map<String, Object> row = objectMapper.convertValue(jsonNode, new TypeReference<>() {});
                 normalized = Map.of("Sheet1", List.of(row));
@@ -95,15 +95,28 @@ public class JsonToExcelController {
                 if (value.isObject()) {
                     Map<String, Object> row = objectMapper.convertValue(value, new TypeReference<>() {});
                     normalized = Map.of("Sheet1", List.of(row));
+
                 } else if (value.isArray()) {
-                    List<Map<String, Object>> rows = objectMapper.convertValue(value, new TypeReference<>() {});
-                    normalized = Map.of(key, rows);
+                    if (value.isEmpty()) {
+                        normalized = Map.of(key, List.of());
+                    } else if (value.get(0).isObject()) {
+                        List<Map<String, Object>> rows = objectMapper.convertValue(value, new TypeReference<>() {});
+                        normalized = Map.of(key, rows);
+                    } else {
+                        // Case: { "data": [123, 456] }
+                        List<Map<String, Object>> wrapped = new ArrayList<>();
+                        for (JsonNode item : value) {
+                            Map<String, Object> row = Map.of(key, objectMapper.convertValue(item, Object.class));
+                            wrapped.add(row);
+                        }
+                        normalized = Map.of("Sheet1", wrapped);
+                    }
                 } else {
                     throw new InvalidInputException("Unsupported nested structure inside key: " + key);
                 }
             }
 
-            // Case 5: { "Sheet1": [...], "Sheet2": [...] }
+            // Case 5: Map of sheets
             else if (jsonNode.isObject()) {
                 normalized = objectMapper.convertValue(jsonNode, new TypeReference<>() {});
             }
