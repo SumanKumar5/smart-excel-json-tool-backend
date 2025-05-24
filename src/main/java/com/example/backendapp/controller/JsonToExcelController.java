@@ -2,6 +2,9 @@ package com.example.backendapp.controller;
 
 import com.example.backendapp.exception.InvalidInputException;
 import com.example.backendapp.service.jsonexcel.JsonToExcelService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -10,9 +13,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Mono;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 @RestController
 @RequestMapping("/json-to-excel")
@@ -24,6 +25,7 @@ public class JsonToExcelController {
     );
 
     private final JsonToExcelService jsonToExcelService;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     public JsonToExcelController(JsonToExcelService jsonToExcelService) {
@@ -59,17 +61,63 @@ public class JsonToExcelController {
     }
 
     @PostMapping(value = "/raw", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<byte[]>> convertRawJsonToExcel(
-            @RequestBody Map<String, List<Map<String, Object>>> rawJson,
+    public Mono<ResponseEntity<byte[]>> convertFlexibleJsonToExcel(
+            @RequestBody JsonNode jsonNode,
             @RequestParam(name = "useAI", defaultValue = "false") boolean useAI,
             @RequestParam(name = "filename", defaultValue = "converted.xlsx") String filename) {
 
-        if (rawJson == null || rawJson.isEmpty()) {
-            return Mono.error(new InvalidInputException("JSON body is empty or invalid."));
-        }
+        try {
+            Map<String, List<Map<String, Object>>> normalized;
 
-        return jsonToExcelService.convert(rawJson, useAI)
-                .map(bytes -> createExcelResponse(filename, bytes));
+            // Case 1: Empty object
+            if (jsonNode.isObject() && !jsonNode.fields().hasNext()) {
+                throw new InvalidInputException("Empty JSON object is not valid.");
+            }
+
+            // Case 2: Flat object → wrap into array under Sheet1
+            else if (jsonNode.isObject() && jsonNode.elements().hasNext() && !jsonNode.elements().next().isContainerNode()) {
+                Map<String, Object> row = objectMapper.convertValue(jsonNode, new TypeReference<>() {});
+                normalized = Map.of("Sheet1", List.of(row));
+            }
+
+            // Case 3: [ {...}, {...} ]
+            else if (jsonNode.isArray()) {
+                List<Map<String, Object>> rows = objectMapper.convertValue(jsonNode, new TypeReference<>() {});
+                normalized = Map.of("Sheet1", rows);
+            }
+
+            // Case 4: { "data": { "ID": 1 } } → unwrap nested object
+            else if (jsonNode.isObject() && jsonNode.size() == 1) {
+                Map.Entry<String, JsonNode> entry = jsonNode.fields().next();
+                String key = entry.getKey();
+                JsonNode value = entry.getValue();
+
+                if (value.isObject()) {
+                    Map<String, Object> row = objectMapper.convertValue(value, new TypeReference<>() {});
+                    normalized = Map.of("Sheet1", List.of(row));
+                } else if (value.isArray()) {
+                    List<Map<String, Object>> rows = objectMapper.convertValue(value, new TypeReference<>() {});
+                    normalized = Map.of(key, rows);
+                } else {
+                    throw new InvalidInputException("Unsupported nested structure inside key: " + key);
+                }
+            }
+
+            // Case 5: { "Sheet1": [...], "Sheet2": [...] }
+            else if (jsonNode.isObject()) {
+                normalized = objectMapper.convertValue(jsonNode, new TypeReference<>() {});
+            }
+
+            else {
+                return Mono.error(new InvalidInputException("Unsupported JSON structure. Must be an object, array of objects, or a map of arrays."));
+            }
+
+            return jsonToExcelService.convert(normalized, useAI)
+                    .map(bytes -> createExcelResponse(filename, bytes));
+
+        } catch (Exception e) {
+            return Mono.error(new InvalidInputException("Failed to parse input JSON: " + e.getMessage()));
+        }
     }
 
     private ResponseEntity<byte[]> createExcelResponse(String filename, byte[] excelBytes) {
